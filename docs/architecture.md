@@ -298,7 +298,7 @@ In every one of these cases, the agent:
 2. Saves the photo with the item name `Error` (if the download had worked).
 3. Logs an **Error** row. The description gives a short reason that the agent writes itself, for example `freshness_score is not a number` or `claude -p timed out`.
 4. Does **not** change today's counts.
-5. Prints the details in the terminal, including the raw answer, for debugging.
+5. Prints the short reason in the terminal (the same text as the Error row's description), e.g. `⚠️  Recognition failed: ready_to_eat is not yes/not_yet/past_best`. Claude's raw answer is not printed.
 6. **Never crashes.** It removes ⏳ (if this was the last photo of the message) and moves on.
 
 There is no automatic retry. The person is asked to send the photo again.
@@ -405,16 +405,20 @@ For Not produce and Error rows, columns 4 and 6–9 are empty. For Error rows, c
 
 If you have the Excel file open, saving can fail. This is common on Windows, where Excel locks the file. The agent handles this as follows:
 
-1. **Try to save.** The agent writes to a temporary copy first and then swaps it in, so a half-written file never replaces the real one.
-2. **If saving fails**, it prints a clear warning in the terminal, for example:
-   `⚠️  Could not save produce_log.xlsx (is it open in Excel?). Retrying…`
-3. **Retry** up to 3 times, 2 seconds apart (fixed in the code).
-4. **If it still fails**, it adds the row to `DATA_DIR/pending_rows.jsonl` and prints:
+1. **Check for Excel's lock file.** Before saving, if Excel's lock file (`~$produce_log.xlsx`, created while the log is open in Excel) is present in `DATA_DIR`, the agent prints a warning. The save still goes ahead:
+   `⚠️  produce_log.xlsx looks open in Excel. Close it without saving, or new rows may be overwritten.`
+2. **Try to save.** The agent writes to a temporary copy first and then swaps it in, so a half-written file never replaces the real one.
+3. **If saving fails**, it prints a clear warning in the terminal, for example:
+   `⚠️  Could not save produce_log.xlsx (is it open in Excel?) [attempt 1/3: …]. Retrying…`
+4. **Retry:** it makes 3 attempts in total (the first try plus 2 retries), 2 seconds apart (fixed in the code).
+5. **If all 3 attempts fail**, it adds the row to `DATA_DIR/pending_rows.jsonl` and prints:
    `⚠️  Row kept in pending_rows.jsonl — it will be added to Excel automatically once the file can be saved.` (*JSON Lines*: a text file with one JSON record per line.)
-5. **Later:** on the next save attempt, and on every start-up, the agent first adds all pending rows to Excel in their original order. Only once that save succeeds does it empty the backup file.
-6. **Never crash:** the reply to Discord is sent regardless. A failed Excel save never blocks or cancels a reply.
+6. **Later:** pending rows are added to Excel with the **next row the agent saves**, i.e. the next photo. They go in first, in their original order. Only once that save succeeds does the agent empty the backup file.
+   - This doesn't happen at start-up. Restarting the agent doesn't move pending rows into Excel by itself; they wait in the backup file until the next photo arrives.
+   - At start-up the agent does **read** the backup file, so pending rows are still included in today's counts (8.3).
+7. **Never crash:** the reply to Discord is sent regardless. A failed Excel save never blocks or cancels a reply.
 
-> **Note for macOS:** Excel on a Mac usually doesn't lock the file, so the agent's save may succeed while you have it open. If you then press Save in Excel, your open (older) copy can overwrite the new rows. **Look at the log, but close it without saving**, or open a copy instead.
+> **Note for macOS:** Excel on a Mac usually doesn't lock the file, so the agent's save may succeed while you have it open. That is why step 1 warns, rather than waits. If you then press Save in Excel, your open (older) copy can overwrite the new rows. **Look at the log, but close it without saving**, or open a copy instead.
 
 ---
 
