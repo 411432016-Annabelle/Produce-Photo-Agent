@@ -75,13 +75,15 @@ flowchart LR
 
 ## 3. Technical choices
 
-### 3.1 Programming language: Python 3.10 or newer
+### 3.1 Programming language: Python 3.12, managed with uv
 
-**Chosen:** Python, as stated in your requirements.
+**Chosen:** Python 3.12, with [uv](https://docs.astral.sh/uv/) to manage it.
 
-**Why:** you already know it, and every library below is mature and well documented in Python.
+**Why:** you already know Python, and every library below is mature and well documented in it.
 
-The project will use a *virtual environment* (`.venv`), which is a private folder of libraries just for this project, so it doesn't interfere with other Python projects on your computer. The libraries are listed in `requirements.txt`, a plain list of the libraries the project needs, so they can be installed with one command.
+*uv* is a tool that installs Python libraries and runs the project with them. It keeps a *virtual environment* (`.venv`), which is a private folder of libraries just for this project, so it doesn't interfere with other Python projects on your computer.
+
+The libraries are listed in `pyproject.toml`, the project's settings file. Their exact versions are recorded in `uv.lock`, so `uv sync` installs the same set on any computer.
 
 ### 3.2 Discord library: discord.py
 
@@ -130,6 +132,8 @@ How the agent uses it:
 | Working folder | A brand-new temp folder containing only `photo.jpg` | Guard 1: Claude can only see this one photo |
 | `--tools Read` | Only the file-reading tool is available | Claude can look at the photo, but it cannot run commands, edit files or browse the web |
 | `--settings` with a deny rule for `DATA_DIR` | Reading anything inside `DATA_DIR` is refused | Guard 1, second layer: even a full path to `DATA_DIR` is blocked |
+| `--setting-sources project` | Your personal Claude Code settings are not loaded | Your own permission rules, hooks and plugins can't widen what this run may do |
+| `--permission-mode default` | The standard permission checks | Even if your personal default is a looser mode, this run asks for permission, and in `-p` mode an unapproved action is refused |
 | `--strict-mcp-config` | No extra tool servers are loaded | Your personal Claude add-ons (such as browser or document tools) are not available to it |
 | `--disable-slash-commands` | Skills and commands are switched off | Keeps the run limited to the single job |
 | `--no-session-persistence` | The run is not saved to your Claude history | Keeps your history clean, and nothing lingers |
@@ -140,7 +144,8 @@ How the agent uses it:
 
 Other rules for the call:
 
-- **Never run through a shell.** The command is given as a list of separate pieces, not one line of text. This means nothing in a filename or setting can be mistaken for an extra command. (*Shell*: the program that interprets typed terminal commands.)
+- **Never run through a shell.** The command is given as a list of separate pieces, not one line of text, and the prompt is sent on the program's input (*stdin*, the channel a program reads typed input from). This means nothing in a filename or setting can be mistaken for an extra command. (*Shell*: the program that interprets typed terminal commands.)
+- **The token stays out of reach.** The agent reads `.env` without copying its values into the environment, so `DISCORD_TOKEN` is not passed to `claude -p`.
 - **Never use `--dangerously-skip-permissions`.** That flag would switch off Claude Code's safety checks.
 - **The temp folder is deleted afterwards**, whether the run succeeded or not.
 
@@ -324,9 +329,9 @@ A message attachment is treated as a photo only if all of these are true:
 - Discord reports it as an image, and its extension is `.jpg`, `.jpeg`, `.png` or `.webp`.
 - It is **not** a GIF or video.
 - It is 20 MB or smaller (fixed in the code).
-- Pillow can actually open it as a still image. If it can't, the attachment is skipped.
-
 Everything else is ignored: text-only messages, PDFs, ZIP files, videos, GIFs, and links to images hosted elsewhere. Ignored items get no reaction, no reply and no row. If a message mixes photos with other files, only the photos are processed.
+
+A file that passes these checks but that Pillow can't actually open as a still image (for example, a broken or animated file) has already been given ⏳. It is therefore handled as an **Error**: the person gets the "Recognition failed" reply, and an Error row is logged with no photo file.
 
 ### 7.2 How the queue works
 
@@ -574,8 +579,8 @@ Claude's answers are also treated as untrusted, because they are influenced by t
 **How it is blocked:**
 
 - Before writing, the agent checks every text cell that comes from a person or from Claude: display name, note, item name, storage tip and description.
-- If the text starts with `=`, `+`, `-` or `@`, or with a tab or line-break character (which can hide one of those), the agent puts an apostrophe `'` in front. Excel then shows it as plain text.
-- The cell is also explicitly marked as text, so openpyxl never turns it into a formula.
+- If the text starts with `=`, `+`, `-` or `@`, or with a tab or line-break character (which can hide one of those), the agent marks the cell as text and turns on Excel's hidden apostrophe (*quote prefix*). This is exactly what typing `'` in front of a value does in Excel. The cell shows the original text unchanged, but Excel never calculates it.
+- Forcing the text type also stops openpyxl from turning `=…` into a formula when it writes the file.
 - The user ID, photo path and message link are always written as plain text too.
 
 ### 12.6 Writing inside the photo
@@ -593,15 +598,30 @@ A photo might contain writing, such as a sticker saying "this is fresh", or a no
 
 ### 12.7 Guards in the code, for teaching
 
-Each Guard will be wrapped in clearly visible comments, for example:
+Each Guard is wrapped in clearly visible comments, for example:
 
 ```
-# ===== GUARD 3 START: safe filename from claude -p item name =====
+# ==== GUARD 3: safe filename from claude -p item name START ====
 ...
-# ===== GUARD 3 END =====
+# ==== GUARD 3 END ====
 ```
 
-Each Guard will sit in one clearly marked place, so it can be switched off on its own to show in class what goes wrong without it. The guards should only be disabled on a test channel with test data, and turned back on afterwards.
+The code outside each block is the **unsafe** default, and the block switches it to the safe behaviour. Commenting out a whole block therefore leaves working code that behaves unsafely, which is what the class demo (P9) shows. With all four commented out:
+
+- `claude -p` runs with `DATA_DIR` as its working folder and the Read tool allowed, without the protective flags.
+- The uploader's text is added to the prompt.
+- Claude's raw item name becomes the filename.
+- Text starting with `=` becomes a live Excel formula.
+
+The README lists each block's line numbers.
+
+**Tested with real `claude -p` runs:**
+
+- **Guards on:** a prompt demanding `DATA_DIR/secret.txt` by full path was **refused**.
+- **Guards off:** the same request **succeeded**.
+- **Injection through the caption:** with the guards off, a caption asking Claude to read `secret.txt` was **ignored by the model** in every trial. It still followed the prompt's "never read any other file" rule.
+
+So Guard 1 is what removes the *ability*, and the model's own caution is only an extra, unreliable layer. For a demo, the clearest way to show Guard 1 is a direct request like the first two tests. The guards should only be disabled on a test channel with test data, and turned back on afterwards.
 
 ---
 
@@ -639,32 +659,39 @@ Each Guard will sit in one clearly marked place, so it can be switched off on it
 ```
 Produce-Photo-Agent/
 ├── .env                  # your real settings and token (never committed)
-├── .env.example          # the four setting names, no real values (committed)
-├── .gitignore            # already ignores .env; data/ will be added
-├── README.md             # how to set up and run
-├── requirements.txt      # discord.py, openpyxl, Pillow, python-dotenv
+├── .env.example          # the four setting names, placeholder values (committed)
+├── .gitignore            # ignores .env and data/
+├── .python-version       # pins Python 3.12 for uv
+├── pyproject.toml        # project settings and library list
+├── uv.lock               # exact library versions
+├── README.md             # how to set up and run, guard line numbers
+├── CLAUDE.md             # rules for Claude Code when working on this repo
 ├── docs/
 │   ├── requirements.md
-│   └── architecture.md   # this document
+│   ├── architecture.md   # this document
+│   ├── discord-server-setup.md
+│   └── discord-bot-setup.md
 ├── prompts/
-│   └── analyze_prompt.txt  # the fixed prompt for claude -p (no user text)
+│   └── analyze_prompt.txt  # the fixed prompt for claude -p
 ├── agent/
-│   ├── main.py           # starts the agent, reads .env, listens on the Gateway
+│   ├── __main__.py       # start-up: uv run python -m agent
 │   ├── config.py         # loads and checks the four settings
+│   ├── bot.py            # Gateway listener: channel filter, image filter, ⏳, one job per photo
 │   ├── queue_worker.py   # the queue, one-at-a-time processing, never-crash safety net
-│   ├── analyzer.py       # runs claude -p in a temp folder (Guard 1)
+│   ├── analyzer.py       # runs claude -p (Guard 1, Guard 2)
 │   ├── contract.py       # parses and validates Claude's JSON (section 5)
-│   ├── photos.py         # download, check, JPEG conversion, filenames (Guard 3)
+│   ├── photos.py         # image checks, JPEG conversion, filenames (Guard 3)
 │   ├── excel_log.py      # Log sheet, today's counts, retries, backup file (Guard 4)
-│   └── replies.py        # builds reply text, emoji, confidence labels
-├── tests/                # automatic checks for the contract, filenames, Excel and replies
+│   ├── replies.py        # builds reply text, emoji, confidence labels
+│   └── log.py            # timestamped terminal messages
+├── tests/                # automatic checks, including guards on and guards commented out
 └── data/                 # default DATA_DIR (never committed)
     ├── photos/
     ├── produce_log.xlsx
     └── pending_rows.jsonl   # only exists while rows are waiting
 ```
 
-Guard 2 lives where a message is turned into a job (`main.py`). That is where the caption is put aside for the Note column only.
+Guard 2 lives in `analyzer.py`, at the point where the prompt is built. The caption travels with the job only so it can be written to the Note column.
 
 ---
 
