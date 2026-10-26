@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Produce Freshness Agent: DATA_DIR (photos, Excel log, backup rows)
+data/
